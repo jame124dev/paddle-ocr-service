@@ -1,8 +1,9 @@
 [phases.setup]
-nixPkgs = ["python311"]
+nixPkgs = ["python311", "gcc", "libgomp"]
+aptPkgs = ["libgomp1", "libglib2.0-0", "libsm6", "libxrender1", "libxext6", "libgl1-mesa-glx"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "gunicorn -w 2 -b 0.0.0.0:$PORT ocr_service:app"
+cmd = "gunicorn -w 1 -b 0.0.0.0:$PORT --timeout 120 ocr_service:app"
