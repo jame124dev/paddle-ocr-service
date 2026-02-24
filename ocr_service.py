@@ -5,15 +5,24 @@ import cv2
 
 app = Flask(__name__)
 
-ocr = PaddleOCR(
-    use_angle_cls=True,
-    lang='ch',
-    use_gpu=False
-)
+# Cache OCR instances per language
+ocr_instances = {}
+
+def get_ocr(lang='ch'):
+    if lang not in ocr_instances:
+        ocr_instances[lang] = PaddleOCR(
+            use_angle_cls=True,
+            lang=lang,
+            use_gpu=False
+        )
+    return ocr_instances[lang]
 
 @app.route('/ocr', methods=['POST'])
 def run_ocr():
     try:
+        lang = request.form.get('lang', 'ch')
+        ocr = get_ocr(lang)
+
         if 'image' not in request.files:
             return jsonify({"error": "No image provided"}), 400
 

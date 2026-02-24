@@ -1,6 +1,6 @@
-# Chinese OCR Server (PaddleOCR)
+# Multi-Language OCR Server (PaddleOCR)
 
-A production-ready OCR API for Simplified Chinese text extraction.
+A production-ready OCR API with multi-language support.
 
 ## Requirements
 
@@ -63,7 +63,7 @@ ocr/
 python ocr_service.py
 ```
 
-Server runs at: `http://127.0.0.1:5004`
+Server runs at: `http://127.0.0.1:5005`
 
 ### API Endpoint
 
@@ -72,14 +72,42 @@ POST /ocr
 Content-Type: multipart/form-data
 ```
 
-| Key   | Type | Description       |
-|-------|------|-------------------|
-| image | File | Image file to OCR |
+| Key   | Type   | Required | Description                          |
+|-------|--------|----------|--------------------------------------|
+| image | File   | Yes      | Image file to OCR                    |
+| lang  | String | No       | Language code (default: `ch`)        |
 
-### Example Request
+#### Supported Languages
 
+| Code     | Language            |
+|----------|---------------------|
+| ch       | Chinese (Simplified)|
+| en       | English             |
+| japan    | Japanese            |
+| korean   | Korean              |
+| french   | French              |
+| german   | German              |
+| arabic   | Arabic              |
+| russian  | Russian             |
+| hindi    | Hindi               |
+
+[Full language list](https://paddlepaddle.github.io/PaddleOCR/en/ppocr/blog/multi_languages.html)
+
+### Example Requests
+
+**Chinese (default):**
 ```bash
-curl -X POST http://127.0.0.1:5004/ocr -F "image=@test.png"
+curl -X POST http://127.0.0.1:5005/ocr -F "image=@test.png"
+```
+
+**English:**
+```bash
+curl -X POST http://127.0.0.1:5005/ocr -F "image=@test.png" -F "lang=en"
+```
+
+**Japanese:**
+```bash
+curl -X POST http://127.0.0.1:5005/ocr -F "image=@test.png" -F "lang=japan"
 ```
 
 ### Response
@@ -99,7 +127,7 @@ Stored in: `~/.paddleocr/`
 
 ```bash
 pip install gunicorn
-gunicorn -w 2 -b 0.0.0.0:5004 ocr_service:app
+gunicorn -w 2 -b 0.0.0.0:5005 ocr_service:app
 ```
 
 ## Troubleshooting
