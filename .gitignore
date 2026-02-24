@@ -1,0 +1,40 @@
+# Virtual environments
+venv/
+venv311/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+
+# PaddleOCR models cache
+.paddleocr/
+
+# Node.js
+node_modules/
+
+# Temp files
+temp.png
+*.tmp
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tesseract (if not needed)
+*.traineddata
