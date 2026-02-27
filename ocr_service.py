@@ -4,7 +4,7 @@ import tempfile
 from collections import defaultdict
 import warnings
 import concurrent.futures
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory, make_response
 
 # Reduce noisy runtime logs/warnings from Paddle stack.
 os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -93,6 +93,20 @@ def health():
             "paddleocr_version": getattr(paddleocr_pkg, "__version__", "unknown"),
         }
     ), 200
+
+
+@app.after_request
+def add_cors_headers(resp):
+    # Allow local demo page and cross-origin calls during development.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return resp
+
+
+@app.route("/demo", methods=["GET"])
+def demo_page():
+    return send_from_directory(".", "stroke_ocr_demo.html")
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +304,36 @@ def extract_main_glyph_roi(img):
     x_off = (side - roi.shape[1]) // 2
     canvas[y_off:y_off + roi.shape[0], x_off:x_off + roi.shape[1]] = roi
     return cv2.resize(canvas, (512, 512), interpolation=cv2.INTER_CUBIC)
+
+
+def preprocess_stroke_image(img, variant: str = "base"):
+    """
+    Stroke-focused preprocessing for rough handwritten characters.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img.copy()
+    up = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+
+    # Normalize illumination and boost local contrast
+    bg = cv2.GaussianBlur(up, (0, 0), sigmaX=15, sigmaY=15)
+    norm = cv2.divide(up, bg, scale=255)
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+    boosted = clahe.apply(norm)
+
+    if variant == "edge":
+        edges = cv2.Canny(boosted, 50, 140)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        edges = cv2.dilate(edges, k, iterations=1)
+        return cv2.bitwise_not(edges)
+
+    # Ink extraction (dark strokes on light bg)
+    bin_inv = cv2.adaptiveThreshold(
+        boosted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
+    )
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    bin_inv = cv2.morphologyEx(bin_inv, cv2.MORPH_OPEN, k, iterations=1)
+    if variant == "thick":
+        bin_inv = cv2.dilate(bin_inv, k, iterations=1)
+    return cv2.bitwise_not(bin_inv)
 
 
 # ---------------------------------------------------------------------------
@@ -646,8 +690,10 @@ def check_and_return(all_candidates, single_char_only, lang, mode,
     return None
 
 
-@app.route('/ocr', methods=['POST'])
+@app.route('/ocr', methods=['POST', 'OPTIONS'])
 def run_ocr():
+    if request.method == "OPTIONS":
+        return make_response("", 204)
     try:
         lang = request.form.get('lang', 'ch')
         mode = request.form.get('mode')
@@ -788,6 +834,108 @@ def run_ocr():
     except Exception as e:
         import traceback
         print(f"OCR Error: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/ocr_strokes', methods=['POST', 'OPTIONS'])
+def run_ocr_strokes():
+    """
+    Stroke-specialized endpoint.
+    Uses stronger stroke extraction passes and falls back to recognition-only on ROI.
+    """
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    try:
+        lang = request.form.get('lang', 'ch')
+        mode = request.form.get('mode', 'handwriting')
+        single_char_param = request.form.get('single_char')
+        if single_char_param is None:
+            single_char_only = (lang == "ch")
+        else:
+            single_char_only = single_char_param.lower() == 'true'
+        expected_text = request.form.get('expected')
+        allowed_chars = parse_allowed_chars(request.form.get('allowed_chars'))
+        debug = request.form.get('debug', 'false').lower() == 'true'
+        try:
+            top_k = max(1, min(20, int(request.form.get('top_k', '5'))))
+        except ValueError:
+            top_k = 5
+
+        if 'image' not in request.files:
+            return jsonify({"error": "No image provided"}), 400
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({"error": "Empty filename"}), 400
+
+        fd, temp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        file.save(temp_path)
+        original_img = cv2.imread(temp_path)
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+
+        if original_img is None:
+            return jsonify({"error": "Image could not be read"}), 400
+
+        use_heavy = not lightweight_mode()
+        use_fast = fast_mode()
+        ocr = get_ocr(lang, mode)
+        all_candidates = []
+
+        # Pass 1: base stroke extraction
+        stroke_base = preprocess_stroke_image(original_img, "base")
+        all_candidates.extend(run_single_pass(ocr, stroke_base, None, False))
+        resp = check_and_return(
+            all_candidates, single_char_only, lang, mode,
+            allowed_chars, expected_text, top_k, use_fast, debug
+        )
+        if resp:
+            return jsonify(resp)
+
+        # Pass 2: thicker strokes
+        stroke_thick = preprocess_stroke_image(original_img, "thick")
+        all_candidates.extend(run_single_pass(ocr, stroke_thick, None, False))
+        resp = check_and_return(
+            all_candidates, single_char_only, lang, mode,
+            allowed_chars, expected_text, top_k, use_fast, debug
+        )
+        if resp:
+            return jsonify(resp)
+
+        # Pass 3: edge map (helps broken/angled strokes)
+        stroke_edge = preprocess_stroke_image(original_img, "edge")
+        all_candidates.extend(run_single_pass(ocr, stroke_edge, None, False))
+
+        # Optional orientation pass only in heavy mode
+        if use_heavy and lang == "ch":
+            all_candidates.extend(run_single_pass(ocr, stroke_base, None, True))
+
+        # ROI and recognition-only fallback
+        roi = extract_main_glyph_roi(original_img)
+        if roi is not None:
+            roi_stroke = preprocess_stroke_image(roi, "base")
+            all_candidates.extend(run_single_pass(ocr, roi_stroke, None, False))
+            if use_heavy:
+                recognizer = get_recognizer(lang, mode)
+                if recognizer is not None:
+                    all_candidates.extend(run_recognition_only(recognizer, roi_stroke))
+
+        result = finalize_and_respond(
+            all_candidates, single_char_only, lang, mode,
+            allowed_chars, expected_text, top_k, use_fast, debug
+        )
+        if result is None:
+            return jsonify({
+                "error": "No text detected",
+                "hint": "Try /ocr with mode=handwriting, or send expected/allowed_chars."
+            })
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        print(f"OCR_STROKES Error: {e}")
         print(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
