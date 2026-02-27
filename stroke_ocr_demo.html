@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stroke OCR Demo</title>
+  <style>
+    :root {
+      --bg: #f3f0e8;
+      --card: #fffdf8;
+      --ink: #0f1a2b;
+      --muted: #5b667a;
+      --line: #d9d2c3;
+      --accent: #1e8f7a;
+      --accent-2: #cf7a00;
+      --danger: #ad2d1d;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(circle at 15% 15%, #fff7e6 0%, transparent 35%),
+        radial-gradient(circle at 85% 75%, #e8fff8 0%, transparent 40%),
+        var(--bg);
+      color: var(--ink);
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.06);
+      padding: 14px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      letter-spacing: .3px;
+    }
+
+    .sub {
+      color: var(--muted);
+      margin: 0 0 14px;
+      font-size: 13px;
+    }
+
+    .canvas-wrap {
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #f7f7f7;
+      position: relative;
+      touch-action: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 420px;
+      background: #f7f7f7;
+      cursor: crosshair;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input, select, button, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 11px;
+      font-size: 14px;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    textarea { min-height: 100px; resize: vertical; }
+
+    .btns {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform .05s ease;
+    }
+
+    button:active { transform: translateY(1px); }
+
+    .primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .warn { background: var(--accent-2); color: #fff; border-color: var(--accent-2); }
+    .danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+    .result-top {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .best {
+      height: 120px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 56px;
+      font-weight: 700;
+      background: #fff;
+    }
+
+    .meta {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .alts {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    th {
+      background: #fbf8f0;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 20px; }
+    .ok { color: #136f53; }
+    .err { color: #a12716; }
+
+    @media (max-width: 900px) {
+      .wrap { grid-template-columns: 1fr; }
+      canvas { height: 360px; }
+      .btns { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="card">
+      <h1>Stroke OCR Drawing Pad</h1>
+      <p class="sub">Draw a character, then send it to <code>/ocr_strokes</code>.</p>
+
+      <div class="canvas-wrap">
+        <canvas id="pad"></canvas>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="apiUrl">API URL</label>
+          <input id="apiUrl" value="/ocr_strokes" />
+        </div>
+        <div>
+          <label for="brush">Brush Size</label>
+          <input id="brush" type="number" min="2" max="40" value="9" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="expected">Expected (optional)</label>
+          <input id="expected" placeholder="它" />
+        </div>
+        <div>
+          <label for="allowed">Allowed Chars (optional)</label>
+          <input id="allowed" placeholder="它,二,一" />
+        </div>
+      </div>
+
+      <div class="btns">
+        <button class="primary" id="sendBtn">Send OCR</button>
+        <button class="warn" id="undoBtn">Undo</button>
+        <button id="clearBtn">Clear</button>
+        <button class="danger" id="fillBtn">Reset BG</button>
+      </div>
+
+      <p class="status" id="status"></p>
+    </section>
+
+    <section class="card">
+      <h1>OCR Result</h1>
+      <div class="result-top">
+        <div class="best" id="bestText">?</div>
+        <div class="meta" id="meta">
+          Draw and click <b>Send OCR</b>.
+        </div>
+      </div>
+
+      <div class="alts">
+        <table>
+          <thead>
+            <tr><th>Text</th><th>Score</th><th>Hits</th></tr>
+          </thead>
+          <tbody id="altsBody">
+            <tr><td colspan="3">No results yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="rawJson">Raw JSON</label>
+        <textarea id="rawJson" readonly></textarea>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("pad");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
+    const bestTextEl = document.getElementById("bestText");
+    const metaEl = document.getElementById("meta");
+    const altsBody = document.getElementById("altsBody");
+    const rawJson = document.getElementById("rawJson");
+    const brushInput = document.getElementById("brush");
+
+    const strokes = [];
+    let currentStroke = [];
+    let drawing = false;
+
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      redraw();
+    }
+
+    function resetBackground() {
+      ctx.fillStyle = "#f7f7f7";
+      ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    }
+
+    function redraw() {
+      resetBackground();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#111";
+      for (const stroke of strokes) {
+        if (!stroke.length) continue;
+        ctx.lineWidth = stroke[0].w || 9;
+        ctx.beginPath();
+        ctx.moveTo(stroke[0].x, stroke[0].y);
+        for (let i = 1; i < stroke.length; i++) {
+          ctx.lineTo(stroke[i].x, stroke[i].y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    function pointFromEvent(e) {
+      const rect = canvas.getBoundingClientRect();
+      if (e.touches && e.touches[0]) {
+        return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+      }
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    function startDraw(e) {
+      e.preventDefault();
+      drawing = true;
+      currentStroke = [];
+      const p = pointFromEvent(e);
+      const w = Number(brushInput.value) || 9;
+      currentStroke.push({ x: p.x, y: p.y, w });
+      strokes.push(currentStroke);
+      redraw();
+    }
+
+    function moveDraw(e) {
+      if (!drawing) return;
+      e.preventDefault();
+      const p = pointFromEvent(e);
+      const w = Number(brushInput.value) || 9;
+      currentStroke.push({ x: p.x, y: p.y, w });
+      redraw();
+    }
+
+    function endDraw(e) {
+      if (!drawing) return;
+      e.preventDefault();
+      drawing = false;
+      redraw();
+    }
+
+    canvas.addEventListener("mousedown", startDraw);
+    canvas.addEventListener("mousemove", moveDraw);
+    window.addEventListener("mouseup", endDraw);
+    canvas.addEventListener("touchstart", startDraw, { passive: false });
+    canvas.addEventListener("touchmove", moveDraw, { passive: false });
+    canvas.addEventListener("touchend", endDraw, { passive: false });
+
+    document.getElementById("undoBtn").onclick = () => {
+      if (strokes.length) strokes.pop();
+      redraw();
+    };
+
+    document.getElementById("clearBtn").onclick = () => {
+      strokes.length = 0;
+      redraw();
+    };
+
+    document.getElementById("fillBtn").onclick = () => {
+      strokes.length = 0;
+      resetBackground();
+      setStatus("Background reset.", true);
+    };
+
+    function setStatus(msg, ok = false) {
+      statusEl.textContent = msg;
+      statusEl.className = "status " + (ok ? "ok" : "err");
+    }
+
+    function canvasToBlob() {
+      return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    }
+
+    function renderResult(data) {
+      bestTextEl.textContent = data.best_text || data.text || "?";
+      metaEl.innerHTML =
+        `best_score: <b>${data.best_score ?? "-"}</b><br>` +
+        `expected_match: <b>${data.expected_match ?? "-"}</b>`;
+
+      const alts = Array.isArray(data.alternatives) ? data.alternatives : [];
+      if (!alts.length) {
+        altsBody.innerHTML = `<tr><td colspan="3">No alternatives</td></tr>`;
+      } else {
+        altsBody.innerHTML = alts.map(a =>
+          `<tr><td>${a.text ?? ""}</td><td>${a.score ?? ""}</td><td>${a.hits ?? ""}</td></tr>`
+        ).join("");
+      }
+      rawJson.value = JSON.stringify(data, null, 2);
+    }
+
+    document.getElementById("sendBtn").onclick = async () => {
+      try {
+        setStatus("Sending...", true);
+        const blob = await canvasToBlob();
+        if (!blob) {
+          setStatus("Could not capture drawing.");
+          return;
+        }
+
+        const url = document.getElementById("apiUrl").value.trim();
+        const expected = document.getElementById("expected").value.trim();
+        const allowed = document.getElementById("allowed").value.trim();
+
+        const fd = new FormData();
+        fd.append("image", blob, "stroke.png");
+        fd.append("lang", "ch");
+        fd.append("mode", "handwriting");
+        fd.append("single_char", "true");
+        if (expected) fd.append("expected", expected);
+        if (allowed) fd.append("allowed_chars", allowed);
+
+        const res = await fetch(url, { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) {
+          renderResult(data);
+          setStatus(data.error || `Request failed (${res.status})`);
+          return;
+        }
+        renderResult(data);
+        setStatus("OCR success.", true);
+      } catch (err) {
+        setStatus("Network/API error: " + err.message);
+      }
+    };
+
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+  </script>
+</body>
+</html>
