@@ -19,8 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY ocr_service.py .
 
-# Expose port
+# Expose default port (Railway still injects PORT dynamically)
 EXPOSE 8080
 
-# Run with gunicorn
-CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "--timeout", "120", "ocr_service:app"]
+# Run with gunicorn (bind to Railway PORT if provided)
+CMD ["sh", "-c", "gunicorn -w 1 -b 0.0.0.0:${PORT:-8080} --timeout 120 ocr_service:app"]

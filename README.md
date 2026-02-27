@@ -1,28 +1,16 @@
-# Multi-Language OCR Server (PaddleOCR)
+# Chinese Handwriting OCR API (Flask + PaddleOCR)
 
-A production-ready OCR API with multi-language support.
+This API is tuned for Chinese handwriting recognition and returns ranked alternatives.
 
-## Requirements
+## Recommended stack
 
-- **Python 3.11** (Do NOT use 3.12+)
-- 4GB+ RAM
-- Internet (first run downloads models)
+- Python 3.11
+- paddleocr 3.x
+- paddlepaddle 3.x
 
-## Tech Stack
+See `requirements.txt` for version ranges.
 
-| Package      | Version  |
-|--------------|----------|
-| Python       | 3.11     |
-| paddlepaddle | 2.6.2    |
-| paddleocr    | 2.7.3    |
-| numpy        | 1.24.4   |
-| scipy        | 1.10.1   |
-| opencv       | 4.6.0.66 |
-| flask        | latest   |
-
-## Installation
-
-### 1. Create Virtual Environment
+## Install
 
 ```bash
 python -m venv venv311
@@ -32,121 +20,79 @@ venv311\Scripts\activate
 
 # Linux/Mac
 source venv311/bin/activate
+
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### 2. Install Dependencies (Order Matters)
-
-```bash
-pip install numpy==1.24.4
-pip install paddlepaddle==2.6.2
-pip install paddleocr==2.7.3
-pip install opencv-python==4.6.0.66
-pip install scipy==1.10.1
-pip install flask
-```
-
-## Project Structure
-
-```
-ocr/
-├── ocr_service.py    # Flask API server
-├── README.md
-├── .gitignore
-└── venv311/          # Virtual environment
-```
-
-## Usage
-
-### Start Server
+## Run
 
 ```bash
 python ocr_service.py
 ```
 
-Server runs at: `http://127.0.0.1:5005`
+Server:
 
-### API Endpoint
+- `http://127.0.0.1:5006`
 
-```
-POST /ocr
-Content-Type: multipart/form-data
-```
+## OCR endpoint
 
-| Key   | Type   | Required | Description                          |
-|-------|--------|----------|--------------------------------------|
-| image | File   | Yes      | Image file to OCR                    |
-| lang  | String | No       | Language code (default: `ch`)        |
+- `POST /ocr`
+- `Content-Type: multipart/form-data`
 
-#### Supported Languages
+Fields:
 
-| Code     | Language            |
-|----------|---------------------|
-| ch       | Chinese (Simplified)|
-| en       | English             |
-| japan    | Japanese            |
-| korean   | Korean              |
-| french   | French              |
-| german   | German              |
-| arabic   | Arabic              |
-| russian  | Russian             |
-| hindi    | Hindi               |
+- `image` (file, required)
+- `lang` (text, optional, default `ch`)
+- `mode` (text, optional, use `handwriting` for handwriting tuning)
+- `single_char` (text, optional: `true`/`false`)
+- `expected` (text, optional: expected answer like `它`)
+- `allowed_chars` (text, optional: e.g. `它二一` or `它,二,一`)
+- `top_k` (text/int, optional, default `5`)
+- `debug` (text, optional: `true` to include engine/version metadata)
 
-[Full language list](https://paddlepaddle.github.io/PaddleOCR/en/ppocr/blog/multi_languages.html)
+Notes:
 
-### Example Requests
+- If `lang=ch` and `mode=handwriting`, `single_char` defaults to `true`.
+- Response includes `best_text`, `best_score`, and `alternatives`.
+- `expected` boosts final pick if present in candidates.
+- `allowed_chars` filters candidates before final ranking.
 
-**Chinese (default):**
-```bash
-curl -X POST http://127.0.0.1:5005/ocr -F "image=@test.png"
-```
-
-**English:**
-```bash
-curl -X POST http://127.0.0.1:5005/ocr -F "image=@test.png" -F "lang=en"
-```
-
-**Japanese:**
-```bash
-curl -X POST http://127.0.0.1:5005/ocr -F "image=@test.png" -F "lang=japan"
-```
-
-### Response
-
-```json
-{
-  "text": "Extracted text here..."
-}
-```
-
-## First Run
-
-Models download automatically on first run (~1-2 minutes).  
-Stored in: `~/.paddleocr/`
-
-## Production Deployment
+## Example (single Chinese character)
 
 ```bash
-pip install gunicorn
-gunicorn -w 2 -b 0.0.0.0:5005 ocr_service:app
+curl -X POST http://127.0.0.1:5006/ocr \\
+  -F "image=@image.png" \\
+  -F "lang=ch" \\
+  -F "mode=handwriting" \\
+  -F "single_char=true"
 ```
+
+## Optional model env vars
+
+For custom handwriting models:
+
+- `CH_HAND_DET_DIR`
+- `CH_HAND_REC_DIR`
+- `CH_HAND_CLS_DIR`
+
+Model-name overrides (PaddleOCR 3.x):
+
+- `CH_HAND_OCR_VERSION` (default `PP-OCRv5`)
+- `CH_HAND_TEXT_DET_MODEL_NAME` (default `PP-OCRv5_server_det`)
+- `CH_HAND_TEXT_REC_MODEL_NAME` (default `PP-OCRv5_server_rec`)
+
+Detector tuning:
+
+- `CH_HAND_DET_DB_THRESH` (default `0.2`)
+- `CH_HAND_DET_DB_BOX_THRESH` (default `0.35`)
+- `CH_HAND_DET_DB_UNCLIP_RATIO` (default `1.8`)
+
+Runtime:
+
+- `OCR_USE_GPU=true|false` (default `false`)
 
 ## Troubleshooting
 
-### NumPy ABI Error
-
-```bash
-pip uninstall numpy -y
-pip install numpy==1.24.4
-```
-
-### SciPy Error
-
-```bash
-pip install scipy==1.10.1
-```
-
-### OCR Returns None
-
-- Ensure image is clear
-- Use dark text on light background
-- Increase image resolution
+- If you get old results after edits, kill old Python processes and restart.
+- If recognition is still weak on your handwriting style, use a custom-trained Chinese handwriting recognition model and set `CH_HAND_REC_DIR`.
