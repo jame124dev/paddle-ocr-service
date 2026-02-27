@@ -24,6 +24,24 @@ ocr_instances = {}
 rec_instances = {}
 
 
+def env_true(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_railway() -> bool:
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))
+
+
+def lightweight_mode() -> bool:
+    # Railway defaults to lightweight unless explicitly disabled.
+    if os.getenv("OCR_LIGHTWEIGHT") is None and is_railway():
+        return True
+    return env_true("OCR_LIGHTWEIGHT", default=False)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify(
@@ -55,11 +73,12 @@ def build_ocr(lang: str, mode: str | None):
         device = "gpu:0" if use_gpu else "cpu"
 
         # Common params for 3.x
+        use_line_orientation = (lang == "ch" and mode == "handwriting" and not lightweight_mode())
         params = {
             "device": device,
             "use_doc_orientation_classify": False,
             "use_doc_unwarping": False,
-            "use_textline_orientation": (lang == "ch" and mode == "handwriting"),
+            "use_textline_orientation": use_line_orientation,
         }
 
         if lang == "ch" and mode == "handwriting":
@@ -145,6 +164,8 @@ def build_recognizer(lang: str, mode: str | None):
     device = "gpu:0" if use_gpu else "cpu"
 
     if lang == "ch" and mode == "handwriting":
+        if lightweight_mode():
+            return None
         model_name = os.getenv("CH_HAND_TEXT_REC_MODEL_NAME", "PP-OCRv5_server_rec")
         rec_dir = os.getenv("CH_HAND_REC_DIR")
         if rec_dir:
@@ -544,6 +565,7 @@ def run_ocr():
             return jsonify({"error": "Image could not be read"}), 400
 
         all_candidates = []
+        use_heavy = not lightweight_mode()
 
         # Pass 1: detail-preserving preprocess
         img = preprocess_image_for_mode(original_img, lang, mode, variant="default")
@@ -552,35 +574,41 @@ def run_ocr():
 
         # Pass 2 (handwriting): line-orientation enabled instance
         if lang == "ch" and mode == "handwriting":
-            all_candidates.extend(run_single_pass(ocr, img, temp_path, use_textline_orientation=True))
+            if use_heavy:
+                all_candidates.extend(run_single_pass(ocr, img, temp_path, use_textline_orientation=True))
 
             # Pass 3: binarized fallback
             bin_img = preprocess_image_for_mode(original_img, lang, mode, variant="binarized")
             all_candidates.extend(run_single_pass(ocr, bin_img, temp_path, use_textline_orientation=False))
-            all_candidates.extend(run_single_pass(ocr, bin_img, temp_path, use_textline_orientation=True))
+            if use_heavy:
+                all_candidates.extend(run_single_pass(ocr, bin_img, temp_path, use_textline_orientation=True))
 
             # Pass 4: harder augmentations for rough single-char handwriting.
             if single_char_only:
-                recognizer = get_recognizer(lang, mode)
+                recognizer = get_recognizer(lang, mode) if use_heavy else None
 
                 # Slight rotations recover slanted handwriting.
                 for angle in (-7, -4, 4, 7):
                     rot = rotate_image(img, angle)
                     all_candidates.extend(run_single_pass(ocr, rot, temp_path, use_textline_orientation=False))
-                    all_candidates.extend(run_single_pass(ocr, rot, temp_path, use_textline_orientation=True))
+                    if use_heavy:
+                        all_candidates.extend(run_single_pass(ocr, rot, temp_path, use_textline_orientation=True))
 
                 # Thicker strokes often fix under-segmentation of hand-drawn chars.
                 thick_img = thicken_strokes(img)
                 all_candidates.extend(run_single_pass(ocr, thick_img, temp_path, use_textline_orientation=False))
-                all_candidates.extend(run_single_pass(ocr, thick_img, temp_path, use_textline_orientation=True))
+                if use_heavy:
+                    all_candidates.extend(run_single_pass(ocr, thick_img, temp_path, use_textline_orientation=True))
                 thick_bin = thicken_strokes(bin_img)
                 all_candidates.extend(run_single_pass(ocr, thick_bin, temp_path, use_textline_orientation=False))
-                all_candidates.extend(run_single_pass(ocr, thick_bin, temp_path, use_textline_orientation=True))
+                if use_heavy:
+                    all_candidates.extend(run_single_pass(ocr, thick_bin, temp_path, use_textline_orientation=True))
 
                 # Pass 4b: high-contrast normalization path.
                 contrast_img = preprocess_image_for_mode(original_img, lang, mode, variant="contrast")
                 all_candidates.extend(run_single_pass(ocr, contrast_img, temp_path, use_textline_orientation=False))
-                all_candidates.extend(run_single_pass(ocr, contrast_img, temp_path, use_textline_orientation=True))
+                if use_heavy:
+                    all_candidates.extend(run_single_pass(ocr, contrast_img, temp_path, use_textline_orientation=True))
                 contrast_bin = cv2.adaptiveThreshold(
                     contrast_img,
                     255,
@@ -590,16 +618,19 @@ def run_ocr():
                     5,
                 )
                 all_candidates.extend(run_single_pass(ocr, contrast_bin, temp_path, use_textline_orientation=False))
-                all_candidates.extend(run_single_pass(ocr, contrast_bin, temp_path, use_textline_orientation=True))
+                if use_heavy:
+                    all_candidates.extend(run_single_pass(ocr, contrast_bin, temp_path, use_textline_orientation=True))
 
                 # Pass 5: isolate main glyph and run again.
                 roi = extract_main_glyph_roi(original_img)
                 if roi is not None:
                     all_candidates.extend(run_single_pass(ocr, roi, temp_path, use_textline_orientation=False))
-                    all_candidates.extend(run_single_pass(ocr, roi, temp_path, use_textline_orientation=True))
+                    if use_heavy:
+                        all_candidates.extend(run_single_pass(ocr, roi, temp_path, use_textline_orientation=True))
                     roi_thick = thicken_strokes(roi)
                     all_candidates.extend(run_single_pass(ocr, roi_thick, temp_path, use_textline_orientation=False))
-                    all_candidates.extend(run_single_pass(ocr, roi_thick, temp_path, use_textline_orientation=True))
+                    if use_heavy:
+                        all_candidates.extend(run_single_pass(ocr, roi_thick, temp_path, use_textline_orientation=True))
 
                     # Pass 6: recognizer-only fallback on normalized glyph ROI.
                     all_candidates.extend(run_recognition_only(recognizer, roi, temp_path))
@@ -644,6 +675,7 @@ def run_ocr():
             response["engine_version"] = ENGINE_VERSION
             response["paddleocr_version"] = getattr(paddleocr_pkg, "__version__", "unknown")
             response["single_char_mode"] = single_char_only
+            response["lightweight_mode"] = lightweight_mode()
 
         return jsonify(response)
 
