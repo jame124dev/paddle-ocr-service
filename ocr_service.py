@@ -10,6 +10,10 @@ os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("FLAGS_logtostderr", "0")
 os.environ.setdefault("PADDLE_LOG_LEVEL", "3")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 warnings.filterwarnings("ignore", message=".*No ccache found.*")
 warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
 
@@ -17,7 +21,7 @@ from paddleocr import PaddleOCR, TextRecognition
 import paddleocr as paddleocr_pkg
 
 app = Flask(__name__)
-ENGINE_VERSION = "2026-02-27-orient-fallback-v13"
+ENGINE_VERSION = "2026-02-27-railway-defaults-v15"
 
 # Cache OCR instances per (language, mode)
 ocr_instances = {}
@@ -40,6 +44,13 @@ def lightweight_mode() -> bool:
     if os.getenv("OCR_LIGHTWEIGHT") is None and is_railway():
         return True
     return env_true("OCR_LIGHTWEIGHT", default=False)
+
+
+def fast_mode() -> bool:
+    # Fast mode is enabled by default when lightweight mode is on.
+    if os.getenv("OCR_FAST_MODE") is None:
+        return lightweight_mode()
+    return env_true("OCR_FAST_MODE", default=False)
 
 
 @app.route("/health", methods=["GET"])
@@ -83,10 +94,13 @@ def build_ocr(lang: str, mode: str | None):
 
         if lang == "ch" and mode == "handwriting":
             ocr_version = os.getenv("CH_HAND_OCR_VERSION", "PP-OCRv5")
+            lw = lightweight_mode()
 
             # Prefer stronger server models for Chinese handwriting.
-            det_model_name = os.getenv("CH_HAND_TEXT_DET_MODEL_NAME", "PP-OCRv5_server_det")
-            rec_model_name = os.getenv("CH_HAND_TEXT_REC_MODEL_NAME", "PP-OCRv5_server_rec")
+            default_det_model = "PP-OCRv4_mobile_det" if lw else "PP-OCRv5_server_det"
+            default_rec_model = "PP-OCRv4_mobile_rec" if lw else "PP-OCRv5_server_rec"
+            det_model_name = os.getenv("CH_HAND_TEXT_DET_MODEL_NAME", default_det_model)
+            rec_model_name = os.getenv("CH_HAND_TEXT_REC_MODEL_NAME", default_rec_model)
 
             if det_model_name:
                 params["text_detection_model_name"] = det_model_name
@@ -371,6 +385,38 @@ def rank_candidates(candidates, single_char_only: bool = False):
     return ranked
 
 
+def best_confidence(ranked):
+    if not ranked:
+        return 0.0
+    return float(ranked[0][2])
+
+
+def should_early_stop(ranked, expected_text: str | None):
+    if not ranked:
+        return False
+    # If expected target is found in current candidates, stop early.
+    if expected_text:
+        expected_text = expected_text.strip()
+        if expected_text and any(item[0] == expected_text for item in ranked):
+            return True
+    # Otherwise stop when top confidence is already strong.
+    return best_confidence(ranked) >= 0.82
+
+
+def should_escalate_to_heavy(ranked, expected_text: str | None):
+    """
+    Decide whether fast-pass results are weak and we should run heavy passes.
+    """
+    if not ranked:
+        return True
+    conf = best_confidence(ranked)
+    if expected_text:
+        t = expected_text.strip()
+        if t and not any(item[0] == t for item in ranked):
+            return True
+    return conf < 0.60
+
+
 def parse_allowed_chars(value):
     """
     Accept allowed chars as:
@@ -566,11 +612,48 @@ def run_ocr():
 
         all_candidates = []
         use_heavy = not lightweight_mode()
+        use_fast = fast_mode()
 
         # Pass 1: detail-preserving preprocess
         img = preprocess_image_for_mode(original_img, lang, mode, variant="default")
         ocr = get_ocr(lang, mode)
         all_candidates.extend(run_single_pass(ocr, img, temp_path, use_textline_orientation=False))
+
+        # Early stop in fast mode if already confident.
+        if use_fast:
+            ranked_now = rank_candidates(all_candidates, single_char_only=single_char_only)
+            ranked_now = apply_language_prior(ranked_now, lang, mode, single_char_only)
+            ranked_now = filter_ranked_by_allowed(ranked_now, allowed_chars)
+            if should_early_stop(ranked_now, expected_text):
+                ranked = ranked_now
+                texts = [item[0] for item in ranked]
+                expected_hit = maybe_pick_expected(ranked, expected_text)
+                top = expected_hit if expected_hit is not None else ranked[0]
+                ordered = ranked
+                if expected_hit is not None:
+                    ordered = [expected_hit] + [item for item in ranked if item[0] != expected_hit[0]]
+                response = {
+                    "text": top[0],
+                    "best_text": top[0],
+                    "best_score": round(top[2], 4),
+                    "alternatives": [
+                        {"text": t, "score": round(avg, 4), "hits": hits}
+                        for t, _, avg, hits in ordered[:top_k]
+                    ],
+                }
+                if expected_text:
+                    response["expected"] = expected_text
+                    response["expected_match"] = bool(expected_hit is not None)
+                if debug:
+                    response["engine_version"] = ENGINE_VERSION
+                    response["paddleocr_version"] = getattr(paddleocr_pkg, "__version__", "unknown")
+                    response["single_char_mode"] = single_char_only
+                    response["lightweight_mode"] = lightweight_mode()
+                    response["fast_mode"] = use_fast
+                return jsonify(response)
+            # Escalate to heavy passes when fast output is weak.
+            if should_escalate_to_heavy(ranked_now, expected_text):
+                use_fast = False
 
         # Pass 2 (handwriting): line-orientation enabled instance
         if lang == "ch" and mode == "handwriting":
@@ -583,8 +666,43 @@ def run_ocr():
             if use_heavy:
                 all_candidates.extend(run_single_pass(ocr, bin_img, temp_path, use_textline_orientation=True))
 
+            # Early stop after cheap passes in fast mode.
+            if use_fast:
+                ranked_now = rank_candidates(all_candidates, single_char_only=single_char_only)
+                ranked_now = apply_language_prior(ranked_now, lang, mode, single_char_only)
+                ranked_now = filter_ranked_by_allowed(ranked_now, allowed_chars)
+                if should_early_stop(ranked_now, expected_text):
+                    ranked = ranked_now
+                    texts = [item[0] for item in ranked]
+                    expected_hit = maybe_pick_expected(ranked, expected_text)
+                    top = expected_hit if expected_hit is not None else ranked[0]
+                    ordered = ranked
+                    if expected_hit is not None:
+                        ordered = [expected_hit] + [item for item in ranked if item[0] != expected_hit[0]]
+                    response = {
+                        "text": top[0],
+                        "best_text": top[0],
+                        "best_score": round(top[2], 4),
+                        "alternatives": [
+                            {"text": t, "score": round(avg, 4), "hits": hits}
+                            for t, _, avg, hits in ordered[:top_k]
+                        ],
+                    }
+                    if expected_text:
+                        response["expected"] = expected_text
+                        response["expected_match"] = bool(expected_hit is not None)
+                    if debug:
+                        response["engine_version"] = ENGINE_VERSION
+                        response["paddleocr_version"] = getattr(paddleocr_pkg, "__version__", "unknown")
+                        response["single_char_mode"] = single_char_only
+                        response["lightweight_mode"] = lightweight_mode()
+                        response["fast_mode"] = use_fast
+                    return jsonify(response)
+                if should_escalate_to_heavy(ranked_now, expected_text):
+                    use_fast = False
+
             # Pass 4: harder augmentations for rough single-char handwriting.
-            if single_char_only:
+            if single_char_only and not use_fast:
                 recognizer = get_recognizer(lang, mode) if use_heavy else None
 
                 # Slight rotations recover slanted handwriting.
@@ -676,6 +794,7 @@ def run_ocr():
             response["paddleocr_version"] = getattr(paddleocr_pkg, "__version__", "unknown")
             response["single_char_mode"] = single_char_only
             response["lightweight_mode"] = lightweight_mode()
+            response["fast_mode"] = use_fast
 
         return jsonify(response)
 
