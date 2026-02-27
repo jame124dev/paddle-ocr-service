@@ -23,4 +23,4 @@ COPY ocr_service.py .
 EXPOSE 8080
 
 # Run with gunicorn (bind to Railway PORT if provided)
-CMD ["sh", "-c", "gunicorn -w 1 -b 0.0.0.0:${PORT:-8080} --timeout 120 ocr_service:app"]
+CMD ["sh", "-c", "gunicorn -w 1 -b 0.0.0.0:${PORT:-8080} --timeout 300 ocr_service:app"]
