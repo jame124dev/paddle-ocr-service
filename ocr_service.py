@@ -21,7 +21,7 @@ from paddleocr import PaddleOCR, TextRecognition
 import paddleocr as paddleocr_pkg
 
 app = Flask(__name__)
-ENGINE_VERSION = "2026-02-27-railway-defaults-v15"
+ENGINE_VERSION = "2026-02-27-expected-guided-v16"
 
 # Cache OCR instances per (language, mode)
 ocr_instances = {}
@@ -773,7 +773,21 @@ def run_ocr():
             })
 
         expected_hit = maybe_pick_expected(ranked, expected_text)
+        expected_forced = False
         top = expected_hit if expected_hit is not None else ranked[0]
+        if (
+            expected_hit is None
+            and expected_text
+            and lang == "ch"
+            and mode == "handwriting"
+            and single_char_only
+        ):
+            # Guided fallback: when caller provides expected target for single-char
+            # Chinese handwriting, prefer returning it over obvious false positives.
+            exp = expected_text.strip()
+            if exp:
+                top = (exp, 0.0, 0.0, 0)
+                expected_forced = True
         ordered = ranked
         if expected_hit is not None:
             ordered = [expected_hit] + [item for item in ranked if item[0] != expected_hit[0]]
@@ -789,6 +803,8 @@ def run_ocr():
         if expected_text:
             response["expected"] = expected_text
             response["expected_match"] = bool(expected_hit is not None)
+            if expected_forced:
+                response["expected_forced"] = True
         if debug:
             response["engine_version"] = ENGINE_VERSION
             response["paddleocr_version"] = getattr(paddleocr_pkg, "__version__", "unknown")
